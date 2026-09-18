@@ -52,7 +52,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, 500, "failed to extract extension", err)
 		return
 	}
-	if extensions[0] != "png" && extensions[0] != "jpeg" {
+	if extensions[0] != ".png" && extensions[0] != ".jpeg" {
 		respondWithError(w, 400, "Not a valid type, only jpeg or png", err)
 		return
 	}
