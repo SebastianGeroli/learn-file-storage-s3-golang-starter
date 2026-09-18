@@ -1,10 +1,12 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -45,19 +47,30 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	mediaType := fileHeader.Header.Get("Content-Type")
-	bytes, err := io.ReadAll(file)
-	if err != nil {
-		respondWithError(w, 400, "Failed to read file", err)
+	extensions, err := mime.ExtensionsByType(mediaType)
+	if err != nil || len(extensions) == 0 {
+		respondWithError(w, 500, "failed to extract extension", err)
 		return
 	}
+
 	dbVideo, err := cfg.db.GetVideo(videoID)
 	if err != nil || dbVideo.UserID != userID {
 		respondWithError(w, http.StatusUnauthorized, "Unauthorized", err)
 		return
 	}
 
-	dataString := base64.StdEncoding.EncodeToString(bytes)
-	thumbnailUrl := fmt.Sprintf("data:%v;base64,%v", mediaType, dataString)
+	thumbailPath := filepath.Join(cfg.assetsRoot, videoID.String()+extensions[0])
+	thumbnailFile, err := os.Create(thumbailPath)
+	if err != nil {
+		respondWithError(w, 500, "Failed to create file", err)
+		return
+	}
+	_, err = io.Copy(thumbnailFile, file)
+	if err != nil {
+		respondWithError(w, 500, "Failed to copy contents", err)
+		return
+	}
+	thumbnailUrl := fmt.Sprintf("http://localhost:%v/assets/%v.%v", cfg.port, videoID, extensions[0])
 	dbVideo.ThumbnailURL = &thumbnailUrl
 	err = cfg.db.UpdateVideo(dbVideo)
 	if err != nil {
