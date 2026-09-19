@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
@@ -65,7 +69,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	file, err := os.CreateTemp("", "tubely-upload")
+	file, err := os.CreateTemp("", "tubely-upload*.mp4")
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to create temp", err)
 		return
@@ -89,7 +93,20 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusInternalServerError, "Failed to create key", err)
 		return
 	}
-	keyString := base64.RawURLEncoding.EncodeToString(key) + ".mp4"
+	aspectRatio, err := getVideoAspectRatio(file.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to get aspect ratio", err)
+		return
+	}
+
+	prefix := "other/"
+	switch aspectRatio {
+	case "16:9":
+		prefix = "landscape/"
+	case "9:16":
+		prefix = "portrait/"
+	}
+	keyString := prefix + base64.RawURLEncoding.EncodeToString(key) + ".mp4"
 	itemInput := s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &keyString,
@@ -109,5 +126,55 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	respondWithJSON(w, http.StatusOK, dbVideo)
+}
 
+func getVideoAspectRatio(filePath string) (string, error) {
+	cmd := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	if err != nil {
+		return "", err
+	}
+	decoder := json.NewDecoder(&out)
+	videoStreams := VideoStreams{}
+	err = decoder.Decode(&videoStreams)
+	if err != nil {
+		return "", err
+	}
+	if len(videoStreams.Streams) == 0 {
+		return "", errors.New("empty streams")
+	}
+	width := 0
+	height := 0
+	for _, stream := range videoStreams.Streams {
+		if stream.CodecType == "video" {
+			width = stream.Width
+			height = stream.Height
+			break
+		}
+	}
+
+	if width == 0 || height == 0 {
+		return "", errors.New("invalid aspect ratio or not a video")
+	}
+
+	aspectRatio := float64(width) / float64(height)
+
+	if math.Abs(aspectRatio-16.0/9.0) < 0.05 {
+		return "16:9", nil
+	} else if math.Abs(aspectRatio-9.0/16.0) < 0.05 {
+		return "9:16", nil
+	} else {
+		return "other", nil
+	}
+
+}
+
+type VideoStreams struct {
+	Streams []struct {
+		CodecType string `json:"codec_type"`
+		Width     int    `json:"width,omitempty"`
+		Height    int    `json:"height,omitempty"`
+	} `json:"streams"`
 }
