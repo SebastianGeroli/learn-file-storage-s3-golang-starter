@@ -1,7 +1,113 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"mime"
 	"net/http"
+	"os"
+
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
+	"github.com/google/uuid"
 )
 
-func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {}
+func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
+	const maxLimit int64 = 1 << 30
+	r.Body = http.MaxBytesReader(w, r.Body, maxLimit)
+
+	videoIDString := r.PathValue("videoID")
+	videoID, err := uuid.Parse(videoIDString)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid ID", err)
+		return
+	}
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Couldn't find JWT", err)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Couldn't validate JWT", err)
+		return
+	}
+	dbVideo, err := cfg.db.GetVideo(videoID)
+
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "Couldn't find the video", err)
+		return
+	}
+
+	if dbVideo.UserID != userID {
+		respondWithError(w, http.StatusUnauthorized, "Not the owner of the video", errors.New("Expected owner"))
+		return
+	}
+	multipartFile, multipartHeader, err := r.FormFile("video")
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Failed to form file", err)
+		return
+	}
+	defer multipartFile.Close()
+	mediatype, _, err := mime.ParseMediaType(multipartHeader.Header.Get("content-type"))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Not a video", err)
+		return
+	}
+
+	if mediatype != "video/mp4" {
+		respondWithError(w, http.StatusBadRequest, "Not a video", errors.New("expected video/mp4"))
+		return
+	}
+
+	file, err := os.CreateTemp("", "tubely-upload")
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to create temp", err)
+		return
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	_, err = io.Copy(file, multipartFile)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to copy files", err)
+		return
+	}
+	_, err = file.Seek(0, io.SeekStart)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to seek start", err)
+		return
+	}
+
+	key := make([]byte, 32)
+	_, err = rand.Read(key)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to create key", err)
+		return
+	}
+	keyString := base64.RawURLEncoding.EncodeToString(key) + ".mp4"
+	itemInput := s3.PutObjectInput{
+		Bucket:      &cfg.s3Bucket,
+		Key:         &keyString,
+		Body:        file,
+		ContentType: &mediatype,
+	}
+	_, err = cfg.s3Client.PutObject(r.Context(), &itemInput)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to put object", err)
+		return
+	}
+	videoURL := fmt.Sprintf("https://%v.s3.%v.amazonaws.com/%v", cfg.s3Bucket, cfg.s3Region, keyString)
+	dbVideo.VideoURL = &videoURL
+	err = cfg.db.UpdateVideo(dbVideo)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to update video url", err)
+		return
+	}
+	respondWithJSON(w, http.StatusOK, dbVideo)
+
+}

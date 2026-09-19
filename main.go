@@ -1,18 +1,22 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	db               database.Client
+	s3Client         *s3.Client
 	jwtSecret        string
 	platform         string
 	filepathRoot     string
@@ -29,6 +33,7 @@ type thumbnail struct {
 }
 
 func main() {
+
 	godotenv.Load(".env")
 
 	pathToDB := os.Getenv("DB_PATH")
@@ -81,6 +86,11 @@ func main() {
 		log.Fatal("PORT environment variable is not set")
 	}
 
+	s3Client, err := configureAWS(s3Region)
+	if err != nil {
+		log.Fatalf("unable to configure aws: %v", err)
+	}
+
 	cfg := apiConfig{
 		db:               db,
 		jwtSecret:        jwtSecret,
@@ -91,6 +101,7 @@ func main() {
 		s3Region:         s3Region,
 		s3CfDistribution: s3CfDistribution,
 		port:             port,
+		s3Client:         s3Client,
 	}
 
 	err = cfg.ensureAssetsDir()
@@ -127,4 +138,13 @@ func main() {
 
 	log.Printf("Serving on: http://localhost:%s/app/\n", port)
 	log.Fatal(srv.ListenAndServe())
+}
+
+func configureAWS(s3Region string) (*s3.Client, error) {
+	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(s3Region))
+	if err != nil {
+		return nil, err
+	}
+	svc := s3.NewFromConfig(cfg)
+	return svc, nil
 }
