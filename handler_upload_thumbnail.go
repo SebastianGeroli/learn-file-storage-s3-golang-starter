@@ -74,7 +74,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, 500, "Failed to copy contents", err)
 		return
 	}
-	thumbnailUrl := fmt.Sprintf("http://localhost:%v/assets/%v.%v", cfg.port, videoID, extensions[0])
+	thumbnailUrl := fmt.Sprintf("http://localhost:%v/assets/%v%v", cfg.port, videoID, extensions[0])
 	dbVideo.ThumbnailURL = &thumbnailUrl
 	err = cfg.db.UpdateVideo(dbVideo)
 	if err != nil {
